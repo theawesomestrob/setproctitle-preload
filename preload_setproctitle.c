@@ -80,7 +80,6 @@ static int fake_main(int argc, char **argv, char **envp) {
   if ( (argstart + maxarglen) == envp[0] ) {
     int i,j,len;
     char **tmp; 
-    char *title = NULL;
     char *p;
 
     for (i = 0; envp[i] != NULL; ++i);
@@ -89,10 +88,6 @@ static int fake_main(int argc, char **argv, char **envp) {
 
     for (i = 0; envp[i] != NULL; ++i) {
       if (!strncmp(envp[i],"SETPROCTITLE_PADDING=",21)) {
-	continue;
-      }
-      if (!strncmp(envp[i],"SETPROCTITLE=",13)) {
-	title = strdup(envp[i]+13);
 	continue;
       }
       tmp[j++] = strdup(envp[i]);
@@ -118,10 +113,6 @@ static int fake_main(int argc, char **argv, char **envp) {
       maxarglen = envp[0] - argstart;
       memset(p,'\0',envp[0]-p);
       environ = envp;
-    }
-
-    if (title) {
-      setproctitle(title);
     }
   }
 
