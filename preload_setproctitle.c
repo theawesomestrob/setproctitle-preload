@@ -134,11 +134,6 @@ static int fake_main(int argc, char **argv, char **envp) {
 
   argv_maxlen = p - argv_start;  
   
-  // TODO: does this actually achieve anything?
-  for (i = 1; i < argc; ++i) {
-    argv[i] = NULL;
-  }
-
   // set our title: use the env var if it's set, otherwise the original argv
   p = getenv(ENV_SETPROCTITLE);
   if (p == NULL) {
@@ -149,6 +144,7 @@ static int fake_main(int argc, char **argv, char **envp) {
   return real_main(argc, new_argv, environ);
 }
 
+// hook the glibc entry point to the program's main()
 int __libc_start_main(int (*main) (int, char **, char **), int argc, 
 		      char **ubp_av, void (*init) (void), void (*fini) (void), 
 		      void (*rtld_fini) (void), void (*stack_end)) {
