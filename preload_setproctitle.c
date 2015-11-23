@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,12 +8,15 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 
+#define ENV_SETPROCTITLE "SETPROCTITLE"
+#define ENV_OPT_SHORTNAME_ELLIPSIS "SETPROCTITLE_ELLIPSIS"
+
 extern char **environ;
 
 static char *argv_start = NULL;
 static size_t argv_maxlen = 0;
 
-static char *orig_title = NULL;
+static char *orig_argv = NULL;
 
 void setproctitle(const char *title) {
   if (title == NULL || argv_start == NULL || argv_maxlen < 1) {
@@ -21,21 +26,30 @@ void setproctitle(const char *title) {
   strncpy(argv_start,title,argv_maxlen);
   argv_start[argv_maxlen-1] = '\0';
   if (strlen(title) > 15) {
-    // if title is >15 chars it'll get truncated by prctl; so let's chop it 
-    // nicely at the last space char before the limit and add an ellipsis
     char *shortname = strndup(title,16);
     char *p;
-    shortname[12] = '\0';
-    if ((p = strrchr(shortname,' ')) != NULL) {
-      ++p;
+    // if title is >15 chars it'll get truncated by prctl; so let's chop it 
+    // nicely if we can
+    if (getenv(ENV_OPT_SHORTNAME_ELLIPSIS)) {
+      // cut at the last space char before the limit and add an ellipsis
+      shortname[12] = '\0';
+      if ((p = strrchr(shortname,' ')) != NULL) {
+	++p;
+      }
+      else {
+	p = shortname + strlen(shortname);
+      }
+      // we truncated shortname at index 12, so we've definitely got space to
+      // add 4 chars ('...' and the trailing null) without going out of bounds
+      strcpy(p,"...");
+      p[3] = '\0';
     }
     else {
-      p = shortname + strlen(shortname);
+      // otherwise cut at the first space
+      if ((p = strchr(shortname,' ')) != NULL) {
+	*p = '\0';
+      }
     }
-    // we truncated shortname at index 12, so we've definitely got space to
-    // add 4 chars ('...' and the trailing null) without going out of bounds
-    strcpy(p,"...");
-    p[3] = '\0';
     prctl(PR_SET_NAME,(long)shortname,0,0,0);
     free(shortname);
   }
@@ -44,12 +58,9 @@ void setproctitle(const char *title) {
   }
 }
 
-static int (*real_main) (int, char **, char **);
-static void *libc_handle;
-
 static int (*real_putenv) (char *);
 int putenv(char *string) {
-  if (!strncmp(string,"SETPROCTITLE=",13) && (strlen(string) > 13)) {
+  if (!strncmp(string,ENV_SETPROCTITLE "=",13) && (strlen(string) > 13)) {
     setproctitle( (char *) (string+13) );
   }
   return real_putenv(string);
@@ -57,7 +68,7 @@ int putenv(char *string) {
 
 static int (*real_setenv) (const char *, const char *, int);
 int setenv(const char *key, const char *value, int overwrite) {
-  if (!strncmp(key,"SETPROCTITLE",13) && (strlen(value) > 0)) {
+  if (!strncmp(key,ENV_SETPROCTITLE,13) && (strlen(value) > 0)) {
     setproctitle(value);
   }
   return real_setenv(key,value,overwrite);
@@ -65,23 +76,23 @@ int setenv(const char *key, const char *value, int overwrite) {
 
 static int (*real_unsetenv) (const char *);
 int unsetenv(const char *key) {
-  if (!strncmp(key,"SETPROCTITLE",13)) {
-    setproctitle(orig_title);
+  if (!strncmp(key,ENV_SETPROCTITLE,13)) {
+    setproctitle(orig_argv);
   }
   return real_unsetenv(key);
 }
+
+static int (*real_main) (int, char **, char **);
 
 static int fake_main(int argc, char **argv, char **envp) {
   char **new_argv = NULL;
   char *p = NULL;
   int i, envc;
   size_t l;
-  dlclose(libc_handle);
 
   // remember where argv starts, find the max length we can play with, then 
   // copy argv and the environment to somewhere else before calling the real
   // main()
-
 
   for (envc = 0; envp[envc] != NULL; ++envc) 
     ;  
@@ -104,13 +115,13 @@ static int fake_main(int argc, char **argv, char **envp) {
 
   // copy all args into a single string, so we can reset the title later
   l = p - argv_start + 1;
-  orig_title = malloc(l);
-  memset(orig_title,'\0',l);
+  orig_argv = malloc(l);
+  memset(orig_argv,'\0',l);
   for (i = 0; i < argc; ++i) {
-    strcat(orig_title,argv[i]);
-    strcat(orig_title," ");
+    strcat(orig_argv,argv[i]);
+    strcat(orig_argv," ");
   }
-  orig_title[l-1] = '\0';
+  orig_argv[l-1] = '\0';
 
   // TODO: handle strdup failure (?!)
   for (i = 0; i < envc; ++i) {
@@ -129,36 +140,29 @@ static int fake_main(int argc, char **argv, char **envp) {
   }
 
   // set our title: use the env var if it's set, otherwise the original argv
-  p = getenv("SETPROCTITLE");
+  p = getenv(ENV_SETPROCTITLE);
   if (p == NULL) {
-    p = orig_title;
+    p = orig_argv;
   }
   setproctitle(p);
 
   return real_main(argc, new_argv, environ);
 }
 
-int __libc_start_main(int (*main) (int, char **, char **),
-		      int argc, char **ubp_av, void (*init) (void),
-		      void (*fini) (void), void (*rtld_fini) (void),
-		      void (*stack_end)) {
-  int (*real_libc_start_main) (int (*main) (int, char **, char **), int argc,
-	       char **ubp_av, void (*init) (void),
-	       void (*fini) (void), void (*rtld_fini) (void),
-	       void (*stack_end));
+int __libc_start_main(int (*main) (int, char **, char **), int argc, 
+		      char **ubp_av, void (*init) (void), void (*fini) (void), 
+		      void (*rtld_fini) (void), void (*stack_end)) {
 
-  libc_handle = dlopen("libc.so.6", RTLD_NOW);
-  if (!libc_handle) {
-    _exit(1);
-  }
-  real_libc_start_main = dlsym(libc_handle, "__libc_start_main");
-  if (!real_libc_start_main) {
-    _exit(1);
-  }
+  int (*real_libc_start_main) (int (*main) (int, char **, char **), int argc,
+			       char **ubp_av, void (*init) (void),
+			       void (*fini) (void), void (*rtld_fini) (void),
+			       void (*stack_end));
+
   real_main = main;
-  real_putenv = dlsym(libc_handle,"putenv");
-  real_setenv = dlsym(libc_handle,"setenv");
-  real_unsetenv = dlsym(libc_handle,"unsetenv");
+  real_libc_start_main = dlsym(RTLD_NEXT, "__libc_start_main");
+  real_putenv = dlsym(RTLD_NEXT,"putenv");
+  real_setenv = dlsym(RTLD_NEXT,"setenv");
+  real_unsetenv = dlsym(RTLD_NEXT,"unsetenv");
 
   return real_libc_start_main(fake_main, argc, ubp_av, init, fini, rtld_fini, stack_end);
 }
